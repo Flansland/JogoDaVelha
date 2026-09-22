@@ -426,7 +426,7 @@ class OnlinePage extends StatefulWidget {
 }
 
 class _OnlinePageState extends State<OnlinePage> {
-  final url = TextEditingController(text: 'ws://10.0.2.2:8080');
+  final url = TextEditingController(text: 'wss://jogodavelha-6neh.onrender.com');
   final code = TextEditingController();
   final name = TextEditingController(text: 'Player');
   bool busy = false;
