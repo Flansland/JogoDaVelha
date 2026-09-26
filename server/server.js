@@ -1,324 +1,96 @@
-const WebSocket = require('ws');
+const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const WebSocket = require('ws');
 
 const PORT = Number(process.env.PORT || 8080);
-const HOST = process.env.HOST || '0.0.0.0';
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'rhuanprodutor3@gmail.com').toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const RUNTIME_ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString('hex');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'game.json');
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const wss = new WebSocket.Server({ port: PORT, host: HOST });
+const DEFAULT_STORE = [
+  {id:'theme_classic', type:'theme', name:'Clássico Azul', price:0, description:'Tema original do jogo', bgColor:'#081A45', accent:'#4D6FC5', imageUrl:''},
+  {id:'theme_sunset', type:'theme', name:'Pôr do Sol', price:250, description:'Azul profundo com pôr do sol', bgColor:'#3A183B', accent:'#FF8A65', imageUrl:''},
+  {id:'theme_forest', type:'theme', name:'Floresta', price:300, description:'Verde noturno', bgColor:'#092D25', accent:'#4CAF8A', imageUrl:''},
+  {id:'x_neon', type:'xstyle', name:'X Neon', price:150, description:'X brilhante', bgColor:'', accent:'#67B7FF', imageUrl:''},
+  {id:'x_gold', type:'xstyle', name:'X Dourado', price:200, description:'X dourado', bgColor:'', accent:'#FFD54F', imageUrl:''},
+  {id:'o_fire', type:'ostyle', name:'O Fogo', price:150, description:'O vermelho intenso', bgColor:'', accent:'#FF5B61', imageUrl:''},
+  {id:'o_ice', type:'ostyle', name:'O Gelo', price:200, description:'O azul congelado', bgColor:'', accent:'#9BE7FF', imageUrl:''},
+];
 
-const rooms = new Map();
-const queue = [];
+function emptyData(){return {users:[], codes:[], store:DEFAULT_STORE, packages:[], friendships:[], friendRequests:[]};}
+function readData(){try{const d=JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));return {...emptyData(),...d,store:Array.isArray(d.store)?d.store:DEFAULT_STORE,codes:Array.isArray(d.codes)?d.codes:[],users:Array.isArray(d.users)?d.users:[],friendships:Array.isArray(d.friendships)?d.friendships:[],friendRequests:Array.isArray(d.friendRequests)?d.friendRequests:[]};}catch{const d=emptyData();writeData(d);return d;}}
+function writeData(d){fs.writeFileSync(DATA_FILE,JSON.stringify(d,null,2));}
+let data=readData();
 
-const emptyBoard = () => Array(9).fill('');
-
-function code() {
-  return crypto.randomBytes(2).toString('hex').toUpperCase();
+function id(prefix='id'){return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(5).toString('hex')}`;}
+function json(res,status,obj){const body=JSON.stringify(obj);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type, Authorization','Access-Control-Allow-Methods':'GET,POST,OPTIONS'});res.end(body);}
+function body(req){return new Promise((resolve,reject)=>{let s='';req.on('data',c=>{s+=c;if(s.length>2_000_000)reject(new Error('body too large'));});req.on('end',()=>{try{resolve(s?JSON.parse(s):{});}catch{resolve({});}});req.on('error',reject);});}
+function authAdmin(req){const h=req.headers.authorization||'';return h.startsWith('Bearer ') && h.slice(7)===RUNTIME_ADMIN_TOKEN;}
+function ensureUser(playerId,name='Player'){
+  let u=data.users.find(x=>x.id===playerId);
+  if(!u){u={id:playerId,name:String(name||'Player').slice(0,32),coins:0,xp:0,level:1,games:0,wins:0,draws:0,losses:0,createdAt:new Date().toISOString(),owned:['theme_classic'],equipped:{theme:'theme_classic',xstyle:'classic_x',ostyle:'classic_o'}};data.users.push(u);writeData(data);}
+  else if(name && u.name!==name){u.name=String(name).slice(0,32);writeData(data);}
+  return u;
 }
+function publicUser(u){return {id:u.id,name:u.name,coins:u.coins,xp:u.xp,level:u.level,games:u.games,wins:u.wins,draws:u.draws,losses:u.losses,owned:u.owned||[],equipped:u.equipped||{}};}
+function findUser(idv){return data.users.find(u=>u.id===idv);}
+function rewardGame(playerId,result){const u=findUser(playerId);if(!u)return null;u.games++;if(result==='win'){u.wins++;u.coins+=50;u.xp+=100;}else if(result==='draw'){u.draws++;u.coins+=20;u.xp+=40;}else{u.losses++;u.coins+=10;u.xp+=20;}u.level=Math.max(1,Math.floor(u.xp/100)+1);writeData(data);return publicUser(u);}
 
-function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
-}
+const rooms=new Map();
+const sockets=new Map();
+const waiting=[];
+function send(ws,obj){if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(obj));}
+function result(board){const lines=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];for(const l of lines){const v=board[l[0]];if(v&&v===board[l[1]]&&v===board[l[2]])return v;}return null;}
+function gameState(room,p){const opp=room.players.find(x=>x.ws!==p.ws);return {type:'state',board:room.board,turn:room.turn,status:room.status,opponent:opp?.name||'Aguardando jogador',xWins:room.xWins,oWins:room.oWins,draws:room.draws,timeLeft:Math.max(0,Math.ceil((room.endsAt-Date.now())/1000)),mySymbol:p.symbol};}
+function broadcast(room){for(const p of room.players)send(p.ws,gameState(room,p));}
+function finishTimeout(room,winner){if(room.finished)return;room.finished=true;room.status='Tempo esgotado!';for(const p of room.players){const res=winner?(p.symbol===winner?'win':'loss'):'loss';const profile=rewardGame(p.id,res);send(p.ws,{type:'profile',profile});}broadcast(room);}
+function finish(room,kind,winner){if(room.finished)return;room.finished=true;if(winner){room.status=`${winner} venceu!`;room[winner==='X'?'xWins':'oWins']++;}else{room.status='Empate!';room.draws++;}for(const p of room.players){const res=winner?(p.symbol===winner?'win':'loss'):'draw';const profile=rewardGame(p.id,res);send(p.ws,{type:'profile',profile});}broadcast(room);}
+function checkRoom(room){if(Date.now()>=room.endsAt){const winner=room.players.length>1?room.players.find(x=>x.symbol!==room.turn)?.symbol:null;finishTimeout(room,winner);return true;}const w=result(room.board);if(w){finish(room,'win',w);return true;}if(room.board.every(Boolean)){finish(room,'draw',null);return true;}room.turn=room.turn==='X'?'O':'X';return false;}
+function createRoom(a,b,start){const c=crypto.randomBytes(3).toString('hex').toUpperCase();const room={code:c,board:Array(9).fill(''),turn:start||'X',status:'',xWins:0,oWins:0,draws:0,finished:false,endsAt:Date.now()+600000,players:[{ws:a.ws,id:a.id,name:a.name,symbol:start||'X'},{ws:b.ws,id:b.id,name:b.name,symbol:start==='X'?'O':'X'}]};rooms.set(c,room);a.ws.room=c;b.ws.room=c;for(const p of room.players)send(p.ws,{type:'matched',code:c,symbol:p.symbol,start:room.turn,timeLeft:600000/1000});broadcast(room);return room;}
 
-function state(room) {
-  return {
-    type: 'state',
-    board: room.board,
-    turn: room.turn,
-    status: room.status,
-    xWins: room.xWins,
-    oWins: room.oWins,
-    draws: room.draws,
-  };
-}
-
-function winner(board) {
-  const lines = [
-    [0, 1, 2],
-    [3, 4, 5],
-    [6, 7, 8],
-    [0, 3, 6],
-    [1, 4, 7],
-    [2, 5, 8],
-    [0, 4, 8],
-    [2, 4, 6],
-  ];
-
-  for (const [a, b, c] of lines) {
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a];
-    }
-  }
-
-  return null;
-}
-
-function broadcast(room) {
-  room.players.forEach((player) => {
-    const opponent = room.players.find((other) => other.ws !== player.ws);
-
-    send(player.ws, {
-      ...state(room),
-      opponent: opponent ? opponent.name : 'Aguardando',
-    });
-  });
-}
-
-function reset(room) {
-  room.board = emptyBoard();
-  room.turn = 'X';
-  room.status = '';
-}
-
-function pair(room) {
-  if (room.players.length !== 2) return;
-
-  room.players[0].symbol = 'X';
-  room.players[1].symbol = 'O';
-
-  room.players.forEach((player) => {
-    send(player.ws, {
-      type: 'matched',
-      code: room.code,
-      symbol: player.symbol,
-      opponent: room.players.find((other) => other.ws !== player.ws)?.name || 'Jogador',
-    });
-  });
-
-  broadcast(room);
-}
-
-function newRoom() {
-  let roomCode;
-  do {
-    roomCode = code();
-  } while (rooms.has(roomCode));
-
-  const room = {
-    code: roomCode,
-    players: [],
-    board: emptyBoard(),
-    turn: 'X',
-    status: '',
-    xWins: 0,
-    oWins: 0,
-    draws: 0,
-  };
-
-  rooms.set(roomCode, room);
-  return room;
-}
-
-function removeFromQueue(ws) {
-  for (let i = queue.length - 1; i >= 0; i--) {
-    if (queue[i].ws === ws) {
-      queue.splice(i, 1);
-    }
-  }
-}
-
-function findWaitingRoom() {
-  for (const room of rooms.values()) {
-    if (room.players.length === 1) {
-      return room;
-    }
-  }
-  return null;
-}
-
-wss.on('connection', (ws) => {
-  ws.on('message', (raw) => {
-    let message;
-
-    try {
-      message = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
-
-    const playerName =
-      typeof message.name === 'string' && message.name.trim()
-        ? message.name.trim().slice(0, 20)
-        : 'Player';
-
-    if (message.type === 'create') {
-      removeFromQueue(ws);
-
-      const room = newRoom();
-
-      room.players.push({
-        ws,
-        name: playerName,
-        symbol: 'X',
-      });
-
-      ws.room = room;
-
-      send(ws, {
-        type: 'waiting',
-        code: room.code,
-      });
-
-      return;
-    }
-
-    if (message.type === 'join') {
-      removeFromQueue(ws);
-
-      const room = rooms.get(String(message.code || '').trim().toUpperCase());
-
-      if (!room || room.players.length >= 2) {
-        send(ws, {
-          type: 'error',
-          message: 'Sala não encontrada ou cheia.',
-        });
-        return;
-      }
-
-      room.players.push({
-        ws,
-        name: playerName,
-        symbol: 'O',
-      });
-
-      ws.room = room;
-      pair(room);
-      return;
-    }
-
-    if (message.type === 'find') {
-      removeFromQueue(ws);
-
-      // Primeiro tenta encontrar outro jogador que também está procurando.
-      const other = queue.shift();
-
-      if (other && other.ws.readyState === WebSocket.OPEN) {
-        const room = newRoom();
-
-        room.players.push(
-          other,
-          {
-            ws,
-            name: playerName,
-            symbol: 'O',
-          },
-        );
-
-        other.ws.room = room;
-        ws.room = room;
-
-        pair(room);
-        return;
-      }
-
-      // Se não houver outro jogador na fila, procura uma sala criada
-      // por alguém que está aguardando um amigo. Isso permite:
-      // PC -> Criar sala
-      // Celular -> Encontrar um Amigo
-      const waitingRoom = findWaitingRoom();
-
-      if (waitingRoom && waitingRoom.players[0].ws !== ws) {
-        waitingRoom.players.push({
-          ws,
-          name: playerName,
-          symbol: 'O',
-        });
-
-        ws.room = waitingRoom;
-
-        pair(waitingRoom);
-        return;
-      }
-
-      queue.push({
-        ws,
-        name: playerName,
-      });
-
-      send(ws, {
-        type: 'waiting',
-        code: 'BUSCANDO',
-      });
-
-      return;
-    }
-
-    const room = ws.room;
-
-    if (!room) return;
-
-    if (message.type === 'move') {
-      if (room.status || room.turn !== wsSymbol(room, ws)) {
-        return;
-      }
-
-      const index = Number(message.index);
-
-      if (
-        !Number.isInteger(index) ||
-        index < 0 ||
-        index > 8 ||
-        room.board[index]
-      ) {
-        return;
-      }
-
-      room.board[index] = room.turn;
-
-      const win = winner(room.board);
-
-      if (win) {
-        room.status = `${win} venceu!`;
-
-        if (win === 'X') {
-          room.xWins++;
-        } else {
-          room.oWins++;
-        }
-      } else if (room.board.every(Boolean)) {
-        room.status = 'Empate!';
-        room.draws++;
-      } else {
-        room.turn = room.turn === 'X' ? 'O' : 'X';
-      }
-
-      broadcast(room);
-      return;
-    }
-
-    if (message.type === 'reset') {
-      reset(room);
-      broadcast(room);
-    }
-  });
-
-  ws.on('close', () => {
-    removeFromQueue(ws);
-
-    const room = ws.room;
-
-    if (!room) return;
-
-    room.players = room.players.filter((player) => player.ws !== ws);
-
-    if (room.players.length === 0) {
-      rooms.delete(room.code);
-      return;
-    }
-
-    send(room.players[0].ws, {
-      ...state(room),
-      opponent: 'Aguardando',
-      status: 'O outro jogador saiu.',
-    });
-  });
+const server=http.createServer(async(req,res)=>{
+  if(req.method==='OPTIONS')return json(res,204,{});
+  const u=new URL(req.url,`http://${req.headers.host}`);
+  try{
+    if(req.method==='GET'&&u.pathname==='/api/store')return json(res,200,{items:data.store,packages:data.packages});
+    if(req.method==='POST'&&u.pathname==='/api/profile'){const b=await body(req);const p=ensureUser(String(b.playerId||''),b.name);if(!p.id)return json(res,400,{error:'playerId obrigatório'});return json(res,200,{profile:publicUser(p)});}
+    if(req.method==='POST'&&u.pathname==='/api/redeem'){const b=await body(req);const p=ensureUser(String(b.playerId||''));const c=data.codes.find(x=>x.code===String(b.code||'').trim().toUpperCase());if(!c)return json(res,404,{error:'Código inválido.'});if(c.expiresAt&&Date.now()>Date.parse(c.expiresAt))return json(res,400,{error:'Código expirado.'});if(c.maxUses!=null&&c.uses>=c.maxUses)return json(res,400,{error:'Código esgotado.'});if(c.usedBy?.includes(p.id))return json(res,400,{error:'Você já usou este código.'});c.usedBy=c.usedBy||[];c.usedBy.push(p.id);c.uses++;if(c.rewardType==='xp'){p.xp+=c.amount;p.level=Math.max(1,Math.floor(p.xp/100)+1);}else p.coins+=c.amount;writeData(data);return json(res,200,{ok:true,profile:publicUser(p),message:`Você recebeu ${c.amount} ${c.rewardType==='xp'?'XP':'moedas'}!`});}
+    if(req.method==='POST'&&u.pathname==='/api/purchase'){const b=await body(req);const p=ensureUser(String(b.playerId||''));const item=[...data.store,...data.packages].find(x=>x.id===b.itemId);if(!item)return json(res,404,{error:'Item não encontrado.'});if((p.owned||[]).includes(item.id))return json(res,400,{error:'Você já possui este item.'});if(p.coins<Number(item.price||0))return json(res,400,{error:'Moedas insuficientes.'});p.coins-=Number(item.price||0);p.owned=p.owned||[];p.owned.push(item.id);if(item.items){for(const iid of item.items){if(!p.owned.includes(iid))p.owned.push(iid);}}writeData(data);return json(res,200,{profile:publicUser(p)});}
+    if(req.method==='POST'&&u.pathname==='/api/equip'){const b=await body(req);const p=ensureUser(String(b.playerId||''));const item=[...data.store,...data.packages].find(x=>x.id===b.itemId);if(!item)return json(res,404,{error:'Item não encontrado.'});if(!(p.owned||[]).includes(item.id))return json(res,400,{error:'Item não comprado.'});p.equipped=p.equipped||{};if(item.type==='theme')p.equipped.theme=item.id;if(item.type==='xstyle')p.equipped.xstyle=item.id;if(item.type==='ostyle')p.equipped.ostyle=item.id;if(item.type==='pack'&&item.items){for(const iid of item.items){const sub=data.store.find(x=>x.id===iid);if(sub){if(sub.type==='theme')p.equipped.theme=sub.id;if(sub.type==='xstyle')p.equipped.xstyle=sub.id;if(sub.type==='ostyle')p.equipped.ostyle=sub.id;}}}writeData(data);return json(res,200,{profile:publicUser(p)});}
+    if(req.method==='POST'&&u.pathname==='/api/friend/request'){const b=await body(req);const from=ensureUser(String(b.fromId||''));const to=findUser(String(b.toId||''));if(!to)return json(res,404,{error:'Jogador não encontrado.'});if(from.id===to.id)return json(res,400,{error:'Você não pode adicionar a si mesmo.'});if(data.friendships.some(x=>(x.a===from.id&&x.b===to.id)||(x.a===to.id&&x.b===from.id)))return json(res,400,{error:'Vocês já são amigos.'});if(!data.friendRequests.some(x=>x.from===from.id&&x.to===to.id)){data.friendRequests.push({id:id('req'),from:from.id,to:to.id,createdAt:new Date().toISOString()});writeData(data);}return json(res,200,{ok:true});}
+    if(req.method==='POST'&&u.pathname==='/api/friend/accept'){const b=await body(req);const r=data.friendRequests.find(x=>x.id===b.requestId&&x.to===b.playerId);if(!r)return json(res,404,{error:'Pedido não encontrado.'});data.friendRequests=data.friendRequests.filter(x=>x.id!==r.id);data.friendships.push({a:r.from,b:r.to});writeData(data);return json(res,200,{ok:true});}
+    if(req.method==='GET'&&u.pathname==='/api/friends'){const pid=u.searchParams.get('playerId');const incoming=data.friendRequests.filter(x=>x.to===pid).map(r=>({...r,from:publicUser(findUser(r.from))}));const friends=data.friendships.filter(x=>x.a===pid||x.b===pid).map(x=>publicUser(findUser(x.a===pid?x.b:x.a)));return json(res,200,{incoming,friends});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/login'){const b=await body(req);if(String(b.email||'').toLowerCase()!==ADMIN_EMAIL||!ADMIN_PASSWORD||String(b.password||'')!==ADMIN_PASSWORD)return json(res,401,{error:'Credenciais inválidas.'});return json(res,200,{token:RUNTIME_ADMIN_TOKEN});}
+    if(req.method==='GET'&&u.pathname==='/api/admin/users'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});return json(res,200,{users:data.users.map(publicUser)});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/user-adjust'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});const b=await body(req);const p=findUser(String(b.playerId||''));if(!p)return json(res,404,{error:'Usuário não encontrado.'});if(Number.isFinite(Number(b.coins)))p.coins=Math.max(0,Number(b.coins));if(Number.isFinite(Number(b.xp)))p.xp=Math.max(0,Number(b.xp));if(Number.isFinite(Number(b.level)))p.level=Math.max(1,Math.floor(Number(b.level)));writeData(data);return json(res,200,{profile:publicUser(p)});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/code'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});const b=await body(req);const c={id:id('code'),code:String(b.code||'').trim().toUpperCase(),rewardType:b.rewardType==='xp'?'xp':'coins',amount:Math.max(1,Math.floor(Number(b.amount||0))),maxUses:b.maxUses===''||b.maxUses==null?null:Math.max(1,Math.floor(Number(b.maxUses))),uses:0,usedBy:[],expiresAt:b.expiresAt||null,createdAt:new Date().toISOString()};if(!c.code)return json(res,400,{error:'Código obrigatório.'});if(data.codes.some(x=>x.code===c.code))return json(res,409,{error:'Código já existe.'});data.codes.push(c);writeData(data);return json(res,200,{code:c});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/theme'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});const b=await body(req);const item={id:id('theme'),type:'theme',name:String(b.name||'Tema'),price:Math.max(0,Number(b.price||0)),description:String(b.description||''),bgColor:String(b.bgColor||'#081A45'),accent:String(b.accent||'#4D6FC5'),imageUrl:String(b.imageUrl||'')};data.store.push(item);writeData(data);return json(res,200,{item});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/pack'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});const b=await body(req);const items=Array.isArray(b.items)?b.items.filter(x=>data.store.some(i=>i.id===x)):[];const pack={id:id('pack'),type:'pack',name:String(b.name||'Pacote'),price:Math.max(0,Number(b.price||0)),description:String(b.description||'Pacote criado pelo admin'),items};data.packages.push(pack);writeData(data);return json(res,200,{pack});}
+    if(req.method==='GET'&&u.pathname==='/api/admin/store'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});return json(res,200,{items:data.store,packages:data.packages,codes:data.codes});}
+    if(req.method==='POST'&&u.pathname==='/api/admin/store-delete'){if(!authAdmin(req))return json(res,401,{error:'Não autorizado.'});const b=await body(req);data.store=data.store.filter(x=>x.id!==b.id);data.packages=data.packages.filter(x=>x.id!==b.id);writeData(data);return json(res,200,{ok:true});}
+    if(req.method==='POST'&&u.pathname==='/api/game/result'){const b=await body(req);const resultValue=['win','draw','loss'].includes(b.result)?b.result:'loss';const p=ensureUser(String(b.playerId||''));return json(res,200,{profile:rewardGame(p.id,resultValue)});}
+    return json(res,404,{error:'Rota não encontrada.'});
+  }catch(e){return json(res,500,{error:'Erro interno.'});}
 });
 
-function wsSymbol(room, ws) {
-  return room.players.find((player) => player.ws === ws)?.symbol;
-}
+const wss=new WebSocket.Server({server});
+wss.on('connection',ws=>{
+  ws.on('message',raw=>{
+    let m;try{m=JSON.parse(raw);}catch{return;}
+    if(m.id){ws.playerId=String(m.id);ws.playerName=String(m.name||'Player').slice(0,32);sockets.set(ws.playerId,ws);ensureUser(ws.playerId,ws.playerName);}
+    if(m.type==='create'){const waitingPlayer={ws,id:ws.playerId,name:ws.playerName};ws.waitingStart=m.start==='O'?'O':'X';const c=crypto.randomBytes(3).toString('hex').toUpperCase();const room={code:c,board:Array(9).fill(''),turn:ws.waitingStart,status:'',xWins:0,oWins:0,draws:0,finished:false,endsAt:Date.now()+600000,players:[{ws,id:ws.playerId,name:ws.playerName,symbol:ws.waitingStart}]};rooms.set(c,room);ws.room=c;send(ws,{type:'waiting',code:c});return;}
+    if(m.type==='join'){const room=rooms.get(String(m.code||'').toUpperCase());if(!room||room.players.length!==1){send(ws,{type:'error',message:'Sala não encontrada.'});return;}room.players.push({ws,id:ws.playerId,name:ws.playerName,symbol:room.players[0].symbol==='X'?'O':'X'});ws.room=room.code;for(const p of room.players)send(p.ws,{type:'matched',code:room.code,symbol:p.symbol,start:room.turn,timeLeft:600});broadcast(room);return;}
+    if(m.type==='find'){const idx=waiting.findIndex(x=>x.ws.readyState===WebSocket.OPEN);if(idx>=0){const other=waiting.splice(idx,1)[0];createRoom(other,{ws,id:ws.playerId,name:ws.playerName},'X');}else{waiting.push({ws,id:ws.playerId,name:ws.playerName});send(ws,{type:'waiting',code:'FILA'});}return;}
+    if(m.type==='move'){const room=rooms.get(ws.room);if(!room||room.finished||room.players.length<2)return;if(Date.now()>=room.endsAt){const winner=room.players.length>1?room.players.find(x=>x.symbol!==room.turn)?.symbol:null;finishTimeout(room,winner);return;}const p=room.players.find(x=>x.ws===ws);const i=Number(m.index);if(!p||p.symbol!==room.turn||i<0||i>8||room.board[i])return;room.board[i]=p.symbol;if(!checkRoom(room))broadcast(room);return;}
+    if(m.type==='reset'){const room=rooms.get(ws.room);if(!room)return;room.board=Array(9).fill('');room.status='';room.turn=room.players[0].symbol;room.finished=false;room.endsAt=Date.now()+600000;broadcast(room);return;}
+  });
+  ws.on('close',()=>{for(let i=waiting.length-1;i>=0;i--)if(waiting[i].ws===ws)waiting.splice(i,1);if(ws.playerId&&sockets.get(ws.playerId)===ws)sockets.delete(ws.playerId);const r=rooms.get(ws.room);if(r){r.players=r.players.filter(p=>p.ws!==ws);if(!r.players.length)rooms.delete(r.code);else{r.status='O outro jogador saiu.';broadcast(r);}}});
+});
 
-console.log(
-  `Jogo Da Velha multiplayer server em ws://${HOST}:${PORT}`,
-);
+setInterval(()=>{for(const room of rooms.values()){if(!room.finished&&Date.now()>=room.endsAt){const winner=room.players.length>1?room.players.find(x=>x.symbol!==room.turn)?.symbol:null;finishTimeout(room,winner);}else if(!room.finished)broadcast(room);}},1000);
+server.listen(PORT,'0.0.0.0',()=>console.log(`Jogo Da Velha server on port ${PORT}`));

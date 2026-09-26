@@ -1,0 +1,79 @@
+{
+  "users": [],
+  "codes": [],
+  "store": [
+    {
+      "id": "theme_classic",
+      "type": "theme",
+      "name": "Clássico Azul",
+      "price": 0,
+      "description": "Tema original do jogo",
+      "bgColor": "#081A45",
+      "accent": "#4D6FC5",
+      "imageUrl": ""
+    },
+    {
+      "id": "theme_sunset",
+      "type": "theme",
+      "name": "Pôr do Sol",
+      "price": 250,
+      "description": "Azul profundo com pôr do sol",
+      "bgColor": "#3A183B",
+      "accent": "#FF8A65",
+      "imageUrl": ""
+    },
+    {
+      "id": "theme_forest",
+      "type": "theme",
+      "name": "Floresta",
+      "price": 300,
+      "description": "Verde noturno",
+      "bgColor": "#092D25",
+      "accent": "#4CAF8A",
+      "imageUrl": ""
+    },
+    {
+      "id": "x_neon",
+      "type": "xstyle",
+      "name": "X Neon",
+      "price": 150,
+      "description": "X brilhante",
+      "bgColor": "",
+      "accent": "#67B7FF",
+      "imageUrl": ""
+    },
+    {
+      "id": "x_gold",
+      "type": "xstyle",
+      "name": "X Dourado",
+      "price": 200,
+      "description": "X dourado",
+      "bgColor": "",
+      "accent": "#FFD54F",
+      "imageUrl": ""
+    },
+    {
+      "id": "o_fire",
+      "type": "ostyle",
+      "name": "O Fogo",
+      "price": 150,
+      "description": "O vermelho intenso",
+      "bgColor": "",
+      "accent": "#FF5B61",
+      "imageUrl": ""
+    },
+    {
+      "id": "o_ice",
+      "type": "ostyle",
+      "name": "O Gelo",
+      "price": 200,
+      "description": "O azul congelado",
+      "bgColor": "",
+      "accent": "#9BE7FF",
+      "imageUrl": ""
+    }
+  ],
+  "packages": [],
+  "friendships": [],
+  "friendRequests": []
+}

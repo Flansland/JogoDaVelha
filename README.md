@@ -1,37 +1,31 @@
-# Jogo Da Velha 2.0
+# Jogo Da Velha — atualização
 
-Aplicativo Flutter para celular com visual inspirado nas referências fornecidas.
+Atualização do projeto com:
 
-## Modos
-- Jogar com CPU: IA minimax para o jogo clássico.
-- Multijogador > Jogar com Amigo: dois jogadores no mesmo celular.
-- Multijogador > Código do Jogo: cria/entra em sala online por código.
-- Multijogador > Encontrar um Amigo: fila automática no servidor online.
+- CPU com 3 dificuldades:
+  - 🟢 Iniciante
+  - 🟠 Amador
+  - 🔴 Pro Player
+- Identidade dos jogadores por ID aleatório permanente (JDV-XXXXXXXX).
+- O ID é gerado uma vez e salvo no aparelho; não há campo para trocar nome.
+- Amigos são adicionados usando o ID.
+- Amigos Online / Offline.
+- Multiplayer usando o servidor configurado internamente, sem mostrar URL WebSocket na interface.
+- Correção do fluxo do WebSocket usando stream broadcast para evitar o erro de stream já escutada.
+- Pontuação online sincronizada com o servidor.
+- Rodapé: Feito por Rhuan Gabriel.
 
-## Multiplayer online
-O app usa WebSocket. O endereço do servidor pode ser alterado na tela de multiplayer.
+Servidor Render usado pelo app: `jogodavelha-6neh.onrender.com`.
 
-Servidor incluído em `server/`:
+## Atualizar o Render
 
-```bash
-cd server
-npm install
-npm start
-```
+Substitua o `server/server.js` pelo arquivo desta pasta e faça novo deploy no Render.
 
-Por padrão ele escuta em `ws://0.0.0.0:8080`.
+## Comandos no projeto Flutter
 
-No celular, não use `ws://10.0.2.2:8080` a menos que esteja usando um emulador Android. Em um celular físico, coloque o IP local do PC, por exemplo `ws://192.168.0.50:8080`, ou use um endereço público `wss://...` quando hospedar o servidor.
-
-## Logo / ícone
-A logo enviada pelo usuário está em `assets/logo.png`. O arquivo `android_patch/AndroidManifest.xml.patch.txt` explica como aplicar a mesma imagem como ícone do Android no projeto Flutter já criado.
-
-## Android
-Abra a pasta do projeto e execute:
-
-```bash
+```bat
+cd /d C:\Projetos\JogoDaVelha
 flutter pub get
+flutter build windows --release
 flutter build apk --release
 ```
-
-O APK sai em `build/app/outputs/flutter-apk/app-release.apk`.
