@@ -1,8 +1,10 @@
 @echo off
 cd /d "%~dp0..\.."
 flutter pub get
+if errorlevel 1 exit /b %errorlevel%
 flutter build apk --release -t lib/admin_main.dart
 if errorlevel 1 exit /b %errorlevel%
-mkdir "Admin\Android" 2>nul
-copy /Y "build\app\outputs\flutter-apk\app-release.apk" "Admin\Android\jogo_da_velha_admin.apk" >nul
- echo Admin Android pronto em Admin\Android
+if not exist "Builds\Android\Admin" mkdir "Builds\Android\Admin"
+copy /Y "build\app\outputs\flutter-apk\app-release.apk" "Builds\Android\Admin\JogoDaVelha-Admin.apk" >nul
+echo Admin Android pronto em Builds\Android\Admin\JogoDaVelha-Admin.apk
+echo.

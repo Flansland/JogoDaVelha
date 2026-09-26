@@ -1,2 +1,3 @@
-import 'main.dart';
-void main()=>runAdminApp();
+import 'main.dart' as app;
+
+Future<void> main() => app.main();

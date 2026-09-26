@@ -1,0 +1,17 @@
+Jogo Da Velha 3.1
+
+PLAYER
+Windows: Player\Windows\build_player_windows.bat
+Android: Player\Android\build_player_android.bat
+
+ADMIN
+Windows: Admin\Windows\build_admin_windows.bat
+Android: Admin\Android\build_admin_android.bat
+
+Os artefatos ficam separados em:
+Builds\Windows\Player
+Builds\Windows\Admin
+Builds\Android\Player
+Builds\Android\Admin
+
+Observacao: a atualizacao automatica do Android baixa o APK publicado pelo painel e abre o instalador do Android. O Android pode exigir que o usuario permita instalacao dessa fonte; o sistema nao permite uma instalacao silenciosa comum sem gerenciamento do dispositivo.
